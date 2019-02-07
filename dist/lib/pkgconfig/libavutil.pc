@@ -1,4 +1,4 @@
-prefix=/Users/mac/dev/ffmpeg/../ffmpeg-emcc/dist
+prefix=/Users/mac/dev/test/tmp/ffmpeg/../WasmVideoPlayer/dist
 exec_prefix=${prefix}
 libdir=${prefix}/lib
 includedir=${prefix}/include
