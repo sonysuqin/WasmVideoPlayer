@@ -5,7 +5,7 @@ H265与H264相比主要的好处在于相同分辨率下降低了几乎一倍的
 
 本文相关的代码使用WASM、FFmpeg、WebGL、Web Audio等组件实现了一个简易的支持H265的Web播放器，作为探索、验证，just for fun。
 # 2 代码
-github地址。
+github地址: [https://github.com/sonysuqin/WasmVideoPlayer](https://github.com/sonysuqin/WasmVideoPlayer).
 
 # 3 依赖
 ## 3.1 WASM
@@ -130,7 +130,7 @@ git clone https://git.ffmpeg.org/ffmpeg.git
 ## 5.3 下载本文的代码
 保证FFmpeg目录和代码目录平级。
 ```
-git clone
+git clone https://github.com/sonysuqin/WasmVideoPlayer.git
 ```
 ## 5.4 编译
 进入代码目录，执行：
@@ -151,7 +151,7 @@ http://127.0.0.1:8080
 ```
 
 # 7 浏览器支持
-目前没有做太多严格的浏览器兼容性测试，主要在Chrome上开发，以下浏览器比较新的版本都可以运行：
+目前(20190207)没有做太多严格的浏览器兼容性测试，主要在Chrome上开发，以下浏览器比较新的版本都可以运行：
 
 - Chrome(360浏览器、搜狗浏览器等webkit内核也支持)；
 - Firefox；
