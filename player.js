@@ -37,7 +37,6 @@ function Player() {
     this.decoderState       = decoderStateIdle;
     this.playerState        = playerStateIdle;
     this.decoding           = false;
-    this.displaying         = false;
     this.decodeInterval     = 5;
     this.audioQueue         = [];
     this.videoQueue         = [];
@@ -48,7 +47,7 @@ function Player() {
     this.timeTrack          = null;
     this.trackTimer         = null;
     this.trackTimerInterval = 500;
-    this.displayDuration		= "00:00:00";
+    this.displayDuration    = "00:00:00";
     this.logger             = new Logger("Player");
     this.initDownloadWorker();
     this.initDecodeWorker();
@@ -113,7 +112,7 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength) {
         if (this.playerState == playerStatePlaying) {
             break;
         }
-        
+
         if (!url) {
             ret = {
                 e: -1,
@@ -132,7 +131,7 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength) {
             success = false;
             this.logger.logError("[ER] playVideo error, canvas empty.");
             break;
-        }       
+        }
 
         if (!this.downloadWorker) {
             ret = {
@@ -160,6 +159,7 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength) {
         this.waitHeaderLength = waitHeaderLength || this.waitHeaderLength;
         this.playerState = playerStatePlaying;
         this.startTrackTimer();
+        this.displayLoop();
 
         //var playCanvasContext = playCanvas.getContext("2d"); //If get 2d, webgl will be disabled.
         this.webglPlayer = new WebGLPlayer(this.canvas, {
@@ -170,7 +170,7 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength) {
             t: kGetFileInfoReq,
             u: url
         };
-        this.downloadWorker.postMessage(req);       
+        this.downloadWorker.postMessage(req);
     } while (false);
 
     return ret;
@@ -238,9 +238,6 @@ Player.prototype.resume = function () {
     //Restart video rendering and audio flushing.
     this.playerState = playerStatePlaying;
 
-    //Display next video frame in queue.
-    this.displayNextVideoFrame();
-
     //Restart decoding.
     this.startDecoding();
 
@@ -287,7 +284,6 @@ Player.prototype.stop = function () {
     this.decoderState       = decoderStateIdle;
     this.playerState        = playerStateIdle;
     this.decoding           = false;
-    this.displaying         = false;
     this.audioQueue         = [];
     this.videoQueue         = [];
 
@@ -347,7 +343,7 @@ Player.prototype.onGetFileInfo = function (info) {
             s: this.fileInfo.size,
             c: this.fileInfo.chunkSize
         };
-        this.decodeWorker.postMessage(req); 
+        this.decodeWorker.postMessage(req);
     } else {
         this.reportPlayError(-1, info.st);
     }
@@ -533,80 +529,57 @@ Player.prototype.onVideoFrame = function (frame) {
         return;
     }
 
-    if (!this.displaying && this.playerState == playerStatePlaying) {
-        this.displaying = true;
-        this.displayVideoFrame(frame);
-    } else {
-        //Queue video frames for memory controlling.
-        this.videoQueue.push(frame);
-        if (this.videoQueue.length >= maxVideoFrameQueueSize) {
-            if (this.decoding) {
-                //this.logger.logInfo("Image queue size >= " + maxVideoFrameQueueSize + ", pause decoding.");
-                this.pauseDecoding();
-            }
+    //Queue video frames for memory controlling.
+    this.videoQueue.push(frame);
+    if (this.videoQueue.length >= maxVideoFrameQueueSize) {
+        if (this.decoding) {
+            //this.logger.logInfo("Image queue size >= " + maxVideoFrameQueueSize + ", pause decoding.");
+            this.pauseDecoding();
         }
     }
 };
 
-Player.prototype.displayVideoFrame = function (frame) {
+Player.prototype.displayLoop = function() {
+    requestAnimationFrame(this.displayLoop.bind(this));
+    if (this.playerState != playerStatePlaying) {
+        return;
+    }
+
+    if (this.videoQueue.length == 0) {
+        return;
+    }
+
+    var frame = this.videoQueue[0];
     var audioTimestamp = this.pcmPlayer.getTimestamp() - this.audioTimeOffset;
     var delay = frame.s - audioTimestamp;
-    var data = new Uint8Array(frame.d);
 
     if (audioTimestamp <= 0 || delay <= 0) {
+        var data = new Uint8Array(frame.d);
         this.renderVideoFrame(data);
-        //this.logger.logInfo("Direct render, video frame ts: " + frame.s + " audio ts:" + audioTimestamp);
-    } else {
-        this.delayRenderVideoFrame(data, delay * 1000);
-        //this.logger.logInfo("Delay render, video frame ts: " + frame.s + " audio ts:" + audioTimestamp + " delay:" + delay * 1000);
-    }
-};
 
-Player.prototype.displayNextVideoFrame = function () {
-    setTimeout(() => {
-        if (this.playerState != playerStatePlaying) {
-            return;
-        }
+        this.videoQueue.shift();
 
-        if (this.videoQueue.length == 0) {
-            this.displaying = false;
-            return;
-        }
-
-        var frame = this.videoQueue.shift();
-        this.displayVideoFrame(frame);
         if (this.videoQueue.length < maxVideoFrameQueueSize / 2) {
             if (!this.decoding) {
                 //this.logger.logInfo("Image queue size < " + maxVideoFrameQueueSize / 2 + ", restart decoding.");
                 this.startDecoding();
             }
         }
-    }, 0);
+
+        if (this.videoQueue.length == 0) {
+            if (this.decoderState == decoderStateFinished) {
+                this.reportPlayError(1, 0, "Finished");
+                this.stop();
+            }
+        }
+    }
 };
 
 Player.prototype.renderVideoFrame = function (data) {
     this.webglPlayer.renderFrame(data, this.videoWidth, this.videoHeight, this.yLength, this.uvLength);
-    if (this.videoQueue.length == 0) {
-        if (this.decoderState == decoderStateFinished) {
-            this.reportPlayError(1, 0, "Finished");
-            this.stop();
-        } else {
-            this.displaying = false;
-        }
-    } else {
-        this.displayNextVideoFrame();
-    }
 };
 
-Player.prototype.delayRenderVideoFrame = function (data, delay) {
-    var self = this;
-    this.videoRendererTimer = setTimeout(function () {
-        self.renderVideoFrame(data);
-        self.videoRendererTimer = null;
-    }, delay);
-};
-
-Player.prototype.downloadOneChunk = function () {		
+Player.prototype.downloadOneChunk = function () {
     var start = this.fileInfo.offset;
     if (start >= this.fileInfo.size) {
         this.logger.logError("Reach file end.");
