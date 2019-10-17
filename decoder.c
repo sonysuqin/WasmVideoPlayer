@@ -314,13 +314,13 @@ ErrorCode processDecodedVideoFrame(AVFrame *frame) {
 }
 
 ErrorCode processDecodedAudioFrame(AVFrame *frame) {
-    ErrorCode ret		= kErrorCode_Success;
-    int sampleSize		= 0;
-    int audioDataSize	= 0;
-    int targetSize		= 0;
-    int offset			= 0;
-    int i				= 0;
-    int ch				= 0;
+    ErrorCode ret       = kErrorCode_Success;
+    int sampleSize      = 0;
+    int audioDataSize   = 0;
+    int targetSize      = 0;
+    int offset          = 0;
+    int i               = 0;
+    int ch              = 0;
     double timestamp    = 0.0f;
     do {
         if (frame == NULL) {
