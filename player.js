@@ -33,7 +33,8 @@ function Player() {
     this.videoHeight        = 0;
     this.yLength            = 0;
     this.uvLength           = 0;
-    this.audioTimeOffset    = 0;
+    this.beginTimeOffset    = -1;
+    this.trackTimeOffset    = -1;
     this.decoderState       = decoderStateIdle;
     this.playerState        = playerStateIdle;
     this.decoding           = false;
@@ -43,11 +44,18 @@ function Player() {
     this.videoRendererTimer = null;
     this.downloadTimer      = null;
     this.chunkInterval      = 200;
+    this.downloadSeqNo      = 0;
+    this.downloading        = false;
     this.timeLabel          = null;
     this.timeTrack          = null;
     this.trackTimer         = null;
     this.trackTimerInterval = 500;
     this.displayDuration    = "00:00:00";
+    this.audioEncoding      = "";
+    this.audioChannels      = 0;
+    this.audioSampleRate    = 0;
+    this.seeking            = false;  // Flag to preventing multi seek from track.
+    this.justSeeked         = false;  // Flag to preventing multi seek from ffmpeg.
     this.logger             = new Logger("Player");
     this.initDownloadWorker();
     this.initDecodeWorker();
@@ -63,7 +71,7 @@ Player.prototype.initDownloadWorker = function () {
                 self.onGetFileInfo(objData.i);
                 break;
             case kFileData:
-                self.onFileData(objData.d, objData.s, objData.e);
+                self.onFileData(objData.d, objData.s, objData.e, objData.q);
                 break;
         }
     }
@@ -89,6 +97,12 @@ Player.prototype.initDecodeWorker = function () {
                 break;
             case kDecodeFinishedEvt:
                 self.onDecodeFinished(objData);
+                break;
+            case kRequestDataEvt:
+                self.onRequestData(objData.o);
+                break;
+            case kSeekToRsp:
+                self.onSeekToRsp(objData.r);
                 break;
         }
     }
@@ -280,7 +294,6 @@ Player.prototype.stop = function () {
     this.videoHeight        = 0;
     this.yLength            = 0;
     this.uvLength           = 0;
-    this.audioTimeOffset    = 0;
     this.decoderState       = decoderStateIdle;
     this.playerState        = playerStateIdle;
     this.decoding           = false;
@@ -307,6 +320,34 @@ Player.prototype.stop = function () {
     return ret;
 };
 
+Player.prototype.seekTo = function(ms) {
+    // Pause playing.
+    this.pause();
+
+    // Stop download.
+    this.stopDownloadTimer();
+
+    // Clear video queue.
+    this.videoQueue.length = 0;
+
+    // Clear audio queue.
+    this.audioQueue.length = 0;
+
+    // Request decoder to seek.
+    this.decodeWorker.postMessage({
+        t: kSeekToReq,
+        ms: ms
+    });
+
+    // Reset begin time offset.
+    //this.logger.logInfo("this.beginTimeOffset = -1");
+    this.beginTimeOffset = -1;
+    this.trackTimeOffset = ms / 1000;
+
+    this.seeking = true;
+    this.justSeeked = true;
+};
+
 Player.prototype.fullscreen = function () {
     if (this.webglPlayer) {
         this.webglPlayer.fullscreen();
@@ -315,7 +356,7 @@ Player.prototype.fullscreen = function () {
 
 Player.prototype.getState = function () {
     return this.playerState;
-}
+};
 
 Player.prototype.setTrack = function (timeTrack, timeLabel) {
     this.timeTrack = timeTrack;
@@ -324,10 +365,12 @@ Player.prototype.setTrack = function (timeTrack, timeLabel) {
     if (this.timeTrack) {
         var self = this;
         this.timeTrack.onchange = function () {
-            self.logger.logInfo("track " + self.timeTrack.value);
+            if (!self.seeking) {
+                self.seekTo(self.timeTrack.value);
+            }
         }
     }
-}
+};
 
 Player.prototype.onGetFileInfo = function (info) {
     if (this.playerState == playerStateIdle) {
@@ -349,10 +392,23 @@ Player.prototype.onGetFileInfo = function (info) {
     }
 };
 
-Player.prototype.onFileData = function (data, start, end) {
-    //this.logger.logInfo("Got data bytes=" + start + "-" + end + ".");
+Player.prototype.onFileData = function (data, start, end, seq) {
     if (this.playerState == playerStateIdle) {
         return;
+    }
+
+    if (seq != this.downloadSeqNo) {
+        return;  // Old data.
+    }
+
+    //this.logger.logInfo("Got data bytes=" + start + "-" + end + ".");
+
+    this.downloading = false;
+
+    if (this.playerState == playerStatePausing) {
+        setTimeout(() => {
+            this.resume();
+        }, 0);
     }
 
     var len = end - start + 1;
@@ -374,6 +430,12 @@ Player.prototype.onFileData = function (data, start, end) {
         case decoderStateReady:
             this.onFileDataUnderDecoderReady();
             break;
+    }
+
+    if (this.seeking) {
+        setTimeout(() => {
+            this.downloadOneChunk();
+        }, 0);
     }
 };
 
@@ -504,10 +566,39 @@ Player.prototype.onAudioParam = function (a) {
         flushingTime: 5000
     });
 
-    this.audioTimeOffset = this.pcmPlayer.getTimestamp();
+    this.audioEncoding      = encoding;
+    this.audioChannels      = channels;
+    this.audioSampleRate    = sampleRate;
+};
+
+Player.prototype.restartAudio = function () {
+    if (this.pcmPlayer) {
+        this.pcmPlayer.destroy();
+        this.pcmPlayer = null;
+    }
+
+    this.pcmPlayer = new PCMPlayer({
+        encoding: this.audioEncoding,
+        channels: this.audioChannels,
+        sampleRate: this.audioSampleRate,
+        flushingTime: 5000
+    });
 };
 
 Player.prototype.onAudioFrame = function (frame) {
+    if (this.playerState != playerStatePlaying) {
+        return;
+    }
+
+    if (this.beginTimeOffset == -1) {
+        this.beginTimeOffset = frame.s;
+        this.trackTimeOffset = frame.s;
+        if (this.seeking) {
+            this.restartAudio();
+            this.seeking = false;
+        }
+    }
+
     switch (this.playerState) {
         case playerStatePlaying: //Directly display audio.
             this.pcmPlayer.play(new Uint8Array(frame.d));
@@ -525,8 +616,17 @@ Player.prototype.onDecodeFinished = function (objData) {
 }
 
 Player.prototype.onVideoFrame = function (frame) {
-    if (this.playerState == playerStateIdle) {
+    if (this.playerState != playerStatePlaying) {
         return;
+    }
+
+    if (this.beginTimeOffset == -1) {
+        this.beginTimeOffset = frame.s;
+        this.trackTimeOffset = frame.s;
+        if (this.seeking) {
+            this.restartAudio();
+            this.seeking = false;
+        }
     }
 
     //Queue video frames for memory controlling.
@@ -536,6 +636,25 @@ Player.prototype.onVideoFrame = function (frame) {
             //this.logger.logInfo("Image queue size >= " + maxVideoFrameQueueSize + ", pause decoding.");
             this.pauseDecoding();
         }
+    }
+};
+
+Player.prototype.onSeekToRsp = function (ret) {
+    if (ret != 0) {
+        this.justSeeked = false;
+        this.seeking = false;
+    }
+};
+
+Player.prototype.onRequestData = function (offset) {
+    if (this.justSeeked) {
+        this.logger.logInfo("Request data " + offset);
+        if (offset >= 0 && offset < this.fileInfo.size) {
+            this.fileInfo.offset = offset;
+        } 
+        this.startDownloadTimer();
+        //this.restartAudio();
+        this.justSeeked = false;
     }
 };
 
@@ -550,8 +669,11 @@ Player.prototype.displayLoop = function() {
     }
 
     var frame = this.videoQueue[0];
-    var audioTimestamp = this.pcmPlayer.getTimestamp() - this.audioTimeOffset;
+    var audioCurTs = this.pcmPlayer.getTimestamp();
+    var audioTimestamp = audioCurTs + this.beginTimeOffset;
     var delay = frame.s - audioTimestamp;
+
+    //this.logger.logInfo("displayLoop delay=" + delay + "=" + " " + frame.s  + " - (" + audioCurTs  + " + " + this.beginTimeOffset + ")" + "->" + audioTimestamp);
 
     if (audioTimestamp <= 0 || delay <= 0) {
         var data = new Uint8Array(frame.d);
@@ -580,6 +702,10 @@ Player.prototype.renderVideoFrame = function (data) {
 };
 
 Player.prototype.downloadOneChunk = function () {
+    if (this.downloading) {
+        return;
+    }
+
     var start = this.fileInfo.offset;
     if (start >= this.fileInfo.size) {
         this.logger.logError("Reach file end.");
@@ -602,13 +728,16 @@ Player.prototype.downloadOneChunk = function () {
         t: kDownloadFileReq,
         u: this.fileInfo.url,
         s: start,
-        e: end
+        e: end,
+        q: this.downloadSeqNo
     };
     this.downloadWorker.postMessage(req);
+    this.downloading = true;
 };
 
 Player.prototype.startDownloadTimer = function () {
     var self = this;
+    this.downloadSeqNo++;
     this.downloadTimer = setInterval(function () {
         self.downloadOneChunk();
     }, this.chunkInterval);
@@ -620,6 +749,7 @@ Player.prototype.stopDownloadTimer = function () {
         this.downloadTimer = null;
         this.logger.logInfo("Download timer stopped.");
     }
+    this.downloading = false;
 };
 
 Player.prototype.startTrackTimer = function () {
@@ -627,7 +757,7 @@ Player.prototype.startTrackTimer = function () {
     this.trackTimer = setInterval(function () {
         self.updateTrackTime();
     }, this.trackTimerInterval);
-}
+};
 
 Player.prototype.stopTrackTimer = function () {
     if (this.trackTimer != null) {
@@ -638,7 +768,7 @@ Player.prototype.stopTrackTimer = function () {
 
 Player.prototype.updateTrackTime = function () {
     if (this.playerState == playerStatePlaying && this.pcmPlayer) {
-        var currentPlayTime = this.pcmPlayer.getTimestamp();
+        var currentPlayTime = this.pcmPlayer.getTimestamp() + this.trackTimeOffset;
         if (this.timeTrack) {
             this.timeTrack.value = 1000 * currentPlayTime;
         }
@@ -647,7 +777,7 @@ Player.prototype.updateTrackTime = function () {
             this.timeLabel.innerHTML = this.formatTime(currentPlayTime) + "/" + this.displayDuration;
         }
     }
-}
+};
 
 Player.prototype.startDecoding = function () {
     var req = {
@@ -671,7 +801,7 @@ Player.prototype.formatTime = function (s) {
     var m = Math.floor((s / 60 % 60)) < 10 ? '0' + Math.floor((s / 60 % 60)) : Math.floor((s / 60 % 60));
     var s = Math.floor((s % 60)) < 10 ? '0' + Math.floor((s % 60)) : Math.floor((s % 60));
     return result = h + ":" + m + ":" + s;
-}
+};
 
 Player.prototype.reportPlayError = function (error, status, message) {
     var e = {
@@ -683,4 +813,4 @@ Player.prototype.reportPlayError = function (error, status, message) {
     if (this.callback) {
         this.callback(e);
     }
-}
+};

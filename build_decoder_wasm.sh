@@ -7,6 +7,7 @@ export EXPORTED_FUNCTIONS="[ \
     '_closeDecoder', \
     '_sendData', \
     '_decodeOnePacket', \
+    '_seekTo', \
     '_main'
 ]"
 

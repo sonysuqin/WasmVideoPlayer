@@ -4,7 +4,8 @@
 #include <unistd.h>
 
 typedef void(*VideoCallback)(unsigned char *buff, int size, double timestamp);
-typedef void(*AudioCallback)(unsigned char *buff, int size);
+typedef void(*AudioCallback)(unsigned char *buff, int size, double timestamp);
+typedef void(*RequestCallback)(int offset);
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,6 +47,7 @@ typedef struct WebDecoder {
     int audioStreamIdx;
     VideoCallback videoCallback;
     AudioCallback audioCallback;
+    RequestCallback requestCallback;
     unsigned char *yuvBuffer;
     //unsigned char *rgbBuffer;
     unsigned char *pcmBuffer;
@@ -59,6 +61,7 @@ typedef struct WebDecoder {
     int64_t fileSize;
     int64_t fileReadPos;
     int64_t fileWritePos;
+    int64_t lastRequestOffset;
 }WebDecoder;
 
 WebDecoder *decoder = NULL;
@@ -318,6 +321,7 @@ ErrorCode processDecodedAudioFrame(AVFrame *frame) {
     int offset			= 0;
     int i				= 0;
     int ch				= 0;
+    double timestamp    = 0.0f;
     do {
         if (frame == NULL) {
             ret = kErrorCode_Invalid_Param;
@@ -356,8 +360,9 @@ ErrorCode processDecodedAudioFrame(AVFrame *frame) {
             }
         }
 
+        timestamp = (double)frame->pts * av_q2d(decoder->avformatContext->streams[decoder->audioStreamIdx]->time_base);
         if (decoder->audioCallback != NULL) {
-            decoder->audioCallback(decoder->pcmBuffer, audioDataSize);
+            decoder->audioCallback(decoder->pcmBuffer, audioDataSize, timestamp);
         }
     } while (0);
     return ret;
@@ -439,8 +444,9 @@ int readCallback(void *opaque, uint8_t *data, int len) {
 }
 
 int64_t seekCallback(void *opaque, int64_t offset, int whence) {
-    int64_t ret = -1;
-    int64_t len = 0;
+    int64_t ret         = -1;
+    int64_t pos         = -1;
+    int64_t req_pos     = -1;
     //simpleLog("seekCallback %lld %d.", offset, whence);
     do {
         if (decoder == NULL || decoder->fp == NULL) {
@@ -456,16 +462,31 @@ int64_t seekCallback(void *opaque, int64_t offset, int whence) {
             break;
         }
 
-        fseek(decoder->fp, (long)offset, whence);
-        len = (int64_t)ftell(decoder->fp);
-        if (len >= decoder->fileWritePos) {
+        ret = fseek(decoder->fp, (long)offset, whence);
+        if (ret == -1) {
             break;
         }
 
-        decoder->fileReadPos = len;
-        ret = len;
+        pos = (int64_t)ftell(decoder->fp);
+        if (pos < decoder->lastRequestOffset || pos > decoder->fileWritePos) {
+            decoder->lastRequestOffset  = pos;
+            decoder->fileReadPos        = pos;
+            decoder->fileWritePos       = pos;
+            req_pos                     = pos;
+            ret                         = -1;  // Forcing not to call read at once.
+            decoder->requestCallback(pos);
+            simpleLog("Will request %lld and return %lld.", pos, ret);
+            break;
+        }
+
+        decoder->fileReadPos = pos;
+        ret = pos;
     } while (0);
     //simpleLog("seekCallback return %lld.", ret);
+
+    if (decoder != NULL && decoder->requestCallback != NULL) {
+        decoder->requestCallback(req_pos);
+    }
     return ret;
 }
 
@@ -512,7 +533,7 @@ ErrorCode uninitDecoder() {
     return kErrorCode_Success;
 }
 
-ErrorCode openDecoder(int *paramArray, int paramCount, long videoCallback, long audioCallback) {
+ErrorCode openDecoder(int *paramArray, int paramCount, long videoCallback, long audioCallback, long requestCallback) {
     ErrorCode ret = kErrorCode_Success;
     int r = 0;
     int i = 0;
@@ -663,6 +684,7 @@ ErrorCode openDecoder(int *paramArray, int paramCount, long videoCallback, long 
 
         decoder->videoCallback = (VideoCallback)videoCallback;
         decoder->audioCallback = (AudioCallback)audioCallback;
+        decoder->requestCallback = (RequestCallback)requestCallback;
 
         simpleLog("Decoder opened, duration %ds, picture size %d.", params[0], decoder->videoSize);
     } while (0);
@@ -764,6 +786,11 @@ ErrorCode decodeOnePacket() {
             break;
         }
 
+        if (decoder->fileWritePos - decoder->fileReadPos <= 0) {
+            ret = kErrorCode_Invalid_State;
+            break;
+        }
+
         packet.data = NULL;
         packet.size = 0;
 
@@ -773,7 +800,7 @@ ErrorCode decodeOnePacket() {
             break;
         }
 
-        if (r < 0) {
+        if (r < 0 || packet.size == 0) {
             break;
         }
 
@@ -793,6 +820,30 @@ ErrorCode decodeOnePacket() {
     } while (0);
     av_packet_unref(&packet);
     return ret;
+}
+
+ErrorCode seekTo(int ms) {
+    int64_t pts = (int64_t)ms * 1000;
+    int ret = avformat_seek_file(decoder->avformatContext,
+                                 -1,
+                                 INT64_MIN,
+                                 pts,
+                                 pts,
+                                 0);
+    simpleLog("Native seek to %d return %d.", ms, ret);
+    if (ret == -1) {
+        return kErrorCode_FFmpeg_Error;
+    } else {
+        avcodec_flush_buffers(decoder->videoCodecContext);
+        avcodec_flush_buffers(decoder->audioCodecContext);
+
+        // Trigger seek callback
+        AVPacket packet;
+        av_init_packet(&packet);
+        av_read_frame(decoder->avformatContext, &packet);
+
+        return kErrorCode_Success;
+    }
 }
 
 int main() {

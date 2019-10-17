@@ -41,7 +41,7 @@ Downloader.prototype.getFileInfo = function (url) {
     xhr.send();
 };
 
-Downloader.prototype.downloadFile = function (url, start, end) {
+Downloader.prototype.downloadFile = function (url, start, end, seq) {
     //this.logger.logInfo("Downloading file " + url + ", bytes=" + start + "-" + end + ".");
     var xhr = new XMLHttpRequest;
     xhr.open('get', url, true);
@@ -52,7 +52,8 @@ Downloader.prototype.downloadFile = function (url, start, end) {
             t: kFileData,
             s: start,
             e: end,
-            d: xhr.response
+            d: xhr.response,
+            q: seq
         };
         self.postMessage(objData, [objData.d]);
     };
@@ -73,7 +74,7 @@ self.onmessage = function (evt) {
             self.downloader.getFileInfo(objData.u);
             break;
         case kDownloadFileReq:
-            self.downloader.downloadFile(objData.u, objData.s, objData.e);
+            self.downloader.downloadFile(objData.u, objData.s, objData.e, objData.q);
             break;
         case kCloseDownloaderReq:
             //Nothing to do.

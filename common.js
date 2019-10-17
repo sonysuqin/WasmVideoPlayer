@@ -27,6 +27,7 @@ const kCloseDecoderReq      = 3;
 const kFeedDataReq          = 4;
 const kStartDecodingReq     = 5;
 const kPauseDecodingReq     = 6;
+const kSeekToReq            = 7;
 
 //Decoder response.
 const kInitDecoderRsp       = 0;
@@ -38,6 +39,8 @@ const kAudioFrame           = 5;
 const kStartDecodingRsp     = 6;
 const kPauseDecodingRsp     = 7;
 const kDecodeFinishedEvt    = 8;
+const kRequestDataEvt       = 9;
+const kSeekToRsp            = 10;
 
 function Logger(module) {
     this.module = module;
