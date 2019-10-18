@@ -29,7 +29,8 @@ typedef enum ErrorCode {
     kErrorCode_NULL_Pointer,
     kErrorCode_Open_File_Error,
     kErrorCode_Eof,
-    kErrorCode_FFmpeg_Error
+    kErrorCode_FFmpeg_Error,
+    kErrorCode_Old_Frame
 }ErrorCode;
 
 typedef enum LogLevel{
@@ -62,6 +63,8 @@ typedef struct WebDecoder {
     int64_t fileReadPos;
     int64_t fileWritePos;
     int64_t lastRequestOffset;
+    double beginTimeOffset;
+    int accurateSeek;
 }WebDecoder;
 
 WebDecoder *decoder = NULL;
@@ -308,6 +311,12 @@ ErrorCode processDecodedVideoFrame(AVFrame *frame) {
         */
 
         timestamp = (double)frame->pts * av_q2d(decoder->avformatContext->streams[decoder->videoStreamIdx]->time_base);
+
+        if (decoder->accurateSeek && timestamp < decoder->beginTimeOffset) {
+            //simpleLog("video timestamp %lf < %lf", timestamp, decoder->beginTimeOffset);
+            ret = kErrorCode_Old_Frame;
+            break;
+        }
         decoder->videoCallback(decoder->yuvBuffer, decoder->videoSize, timestamp);
     } while (0);
     return ret;
@@ -361,6 +370,12 @@ ErrorCode processDecodedAudioFrame(AVFrame *frame) {
         }
 
         timestamp = (double)frame->pts * av_q2d(decoder->avformatContext->streams[decoder->audioStreamIdx]->time_base);
+
+        if (decoder->accurateSeek && timestamp < decoder->beginTimeOffset) {
+            //simpleLog("audio timestamp %lf < %lf", timestamp, decoder->beginTimeOffset);
+            ret = kErrorCode_Old_Frame;
+            break;
+        }
         if (decoder->audioCallback != NULL) {
             decoder->audioCallback(decoder->pcmBuffer, audioDataSize, timestamp);
         }
@@ -406,7 +421,10 @@ ErrorCode decodePacket(AVPacket *pkt, int *decodedLen) {
             simpleLog("Error during decoding %d.", ret);
             return kErrorCode_FFmpeg_Error;
         } else {
-            isVideo ? processDecodedVideoFrame(decoder->avFrame) : processDecodedAudioFrame(decoder->avFrame);
+            int r = isVideo ? processDecodedVideoFrame(decoder->avFrame) : processDecodedAudioFrame(decoder->avFrame);
+            if (r == kErrorCode_Old_Frame) {
+                return r;
+            }
         }
     }
 
@@ -822,15 +840,17 @@ ErrorCode decodeOnePacket() {
     return ret;
 }
 
-ErrorCode seekTo(int ms) {
+ErrorCode seekTo(int ms, int accurateSeek) {
+    int ret = 0;
     int64_t pts = (int64_t)ms * 1000;
-    int ret = avformat_seek_file(decoder->avformatContext,
+    decoder->accurateSeek = accurateSeek;
+    ret = avformat_seek_file(decoder->avformatContext,
                                  -1,
                                  INT64_MIN,
                                  pts,
                                  pts,
-                                 0);
-    simpleLog("Native seek to %d return %d.", ms, ret);
+                                 AVSEEK_FLAG_BACKWARD);
+    simpleLog("Native seek to %d return %d %d.", ms, ret, decoder->accurateSeek);
     if (ret == -1) {
         return kErrorCode_FFmpeg_Error;
     } else {
@@ -842,6 +862,7 @@ ErrorCode seekTo(int ms) {
         av_init_packet(&packet);
         av_read_frame(decoder->avformatContext, &packet);
 
+        decoder->beginTimeOffset = (double)ms / 1000;
         return kErrorCode_Success;
     }
 }

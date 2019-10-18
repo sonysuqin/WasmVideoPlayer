@@ -18,6 +18,16 @@
             </span>
         </div>
         <div class="canvasDiv">
+            <div class="loadEffect" id="loading" style="display:none;">
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+                <span></span>
+            </div>
             <canvas id="playCanvas" width="852" height="480"></canvas>
         </div>
         <div class="sideBar">
@@ -49,6 +59,9 @@
     <script type='text/javascript'>
         //Player object.
         self.player = new Player();
+
+        var loadingDiv = document.getElementById("loading");
+        self.player.setLoadingDiv(loadingDiv);
 
         //File url.
         var videoFileUrl = "video/h265_high.mp4";

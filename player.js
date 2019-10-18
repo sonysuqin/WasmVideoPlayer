@@ -33,8 +33,7 @@ function Player() {
     this.videoHeight        = 0;
     this.yLength            = 0;
     this.uvLength           = 0;
-    this.beginTimeOffset    = -1;
-    this.trackTimeOffset    = -1;
+    this.beginTimeOffset    = 0;
     this.decoderState       = decoderStateIdle;
     this.playerState        = playerStateIdle;
     this.decoding           = false;
@@ -56,6 +55,8 @@ function Player() {
     this.audioSampleRate    = 0;
     this.seeking            = false;  // Flag to preventing multi seek from track.
     this.justSeeked         = false;  // Flag to preventing multi seek from ffmpeg.
+    this.urgent             = false;
+    this.loadingDiv         = null;
     this.logger             = new Logger("Player");
     this.initDownloadWorker();
     this.initDecodeWorker();
@@ -256,7 +257,9 @@ Player.prototype.resume = function () {
     this.startDecoding();
 
     //Restart track timer.
-    this.startTrackTimer();
+    if (!this.seeking) {
+        this.startTrackTimer();
+    }
 
     var ret = {
         e: 0,
@@ -341,11 +344,11 @@ Player.prototype.seekTo = function(ms) {
 
     // Reset begin time offset.
     //this.logger.logInfo("this.beginTimeOffset = -1");
-    this.beginTimeOffset = -1;
-    this.trackTimeOffset = ms / 1000;
+    this.beginTimeOffset = ms / 1000;
 
     this.seeking = true;
     this.justSeeked = true;
+    this.showLoading();
 };
 
 Player.prototype.fullscreen = function () {
@@ -393,6 +396,9 @@ Player.prototype.onGetFileInfo = function (info) {
 };
 
 Player.prototype.onFileData = function (data, start, end, seq) {
+    //this.logger.logInfo("Got data bytes=" + start + "-" + end + ".");
+    this.downloading = false;
+
     if (this.playerState == playerStateIdle) {
         return;
     }
@@ -400,10 +406,6 @@ Player.prototype.onFileData = function (data, start, end, seq) {
     if (seq != this.downloadSeqNo) {
         return;  // Old data.
     }
-
-    //this.logger.logInfo("Got data bytes=" + start + "-" + end + ".");
-
-    this.downloading = false;
 
     if (this.playerState == playerStatePausing) {
         setTimeout(() => {
@@ -432,7 +434,7 @@ Player.prototype.onFileData = function (data, start, end, seq) {
             break;
     }
 
-    if (this.seeking) {
+    if (this.urgent) {
         setTimeout(() => {
             this.downloadOneChunk();
         }, 0);
@@ -590,13 +592,11 @@ Player.prototype.onAudioFrame = function (frame) {
         return;
     }
 
-    if (this.beginTimeOffset == -1) {
-        this.beginTimeOffset = frame.s;
-        this.trackTimeOffset = frame.s;
-        if (this.seeking) {
-            this.restartAudio();
-            this.seeking = false;
-        }
+    if (this.seeking) {
+        this.restartAudio();
+        this.startTrackTimer();
+        this.hideLoading();
+        this.seeking = false;
     }
 
     switch (this.playerState) {
@@ -620,13 +620,11 @@ Player.prototype.onVideoFrame = function (frame) {
         return;
     }
 
-    if (this.beginTimeOffset == -1) {
-        this.beginTimeOffset = frame.s;
-        this.trackTimeOffset = frame.s;
-        if (this.seeking) {
-            this.restartAudio();
-            this.seeking = false;
-        }
+    if (this.seeking) {
+        this.restartAudio();
+        this.startTrackTimer();
+        this.hideLoading();
+        this.seeking = false;
     }
 
     //Queue video frames for memory controlling.
@@ -768,7 +766,7 @@ Player.prototype.stopTrackTimer = function () {
 
 Player.prototype.updateTrackTime = function () {
     if (this.playerState == playerStatePlaying && this.pcmPlayer) {
-        var currentPlayTime = this.pcmPlayer.getTimestamp() + this.trackTimeOffset;
+        var currentPlayTime = this.pcmPlayer.getTimestamp() + this.beginTimeOffset;
         if (this.timeTrack) {
             this.timeTrack.value = 1000 * currentPlayTime;
         }
@@ -812,5 +810,21 @@ Player.prototype.reportPlayError = function (error, status, message) {
 
     if (this.callback) {
         this.callback(e);
+    }
+};
+
+Player.prototype.setLoadingDiv = function (loadingDiv) {
+    this.loadingDiv = loadingDiv;
+}
+
+Player.prototype.hideLoading = function () {
+    if (this.loadingDiv != null) {
+        loading.style.display = "none";
+    }
+};
+
+Player.prototype.showLoading = function () {
+    if (this.loadingDiv != null) {
+        loading.style.display = "block";
     }
 };

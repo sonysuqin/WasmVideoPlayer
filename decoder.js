@@ -10,6 +10,7 @@ self.importScripts("libffmpeg.js");
 function Decoder() {
     this.logger             = new Logger("Decoder");
     this.coreLogLevel       = 0;
+    this.accurateSeek       = true;
     this.wasmLoaded         = false;
     this.tmpReqQue          = [];
     this.cacheBuffer        = null;
@@ -128,6 +129,11 @@ Decoder.prototype.decode = function () {
         };
         self.postMessage(objData);
     }
+
+    while (ret == 9) {
+        //self.decoder.logger.logInfo("One old frame");
+        ret = Module._decodeOnePacket();
+    }
 };
 
 Decoder.prototype.sendData = function (data) {
@@ -137,7 +143,8 @@ Decoder.prototype.sendData = function (data) {
 };
 
 Decoder.prototype.seekTo = function (ms) {
-    var ret = Module._seekTo(ms);
+    var accurateSeek = this.accurateSeek ? 1 : 0;
+    var ret = Module._seekTo(ms, accurateSeek);
     var objData = {
         t: kSeekToRsp,
         r: ret
