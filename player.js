@@ -367,6 +367,11 @@ Player.prototype.setTrack = function (timeTrack, timeLabel) {
 
     if (this.timeTrack) {
         var self = this;
+        this.timeTrack.oninput = function () {
+            if (!self.seeking) {
+                self.seekTo(self.timeTrack.value);
+            }
+        }
         this.timeTrack.onchange = function () {
             if (!self.seeking) {
                 self.seekTo(self.timeTrack.value);
