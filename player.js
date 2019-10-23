@@ -413,9 +413,13 @@ Player.prototype.onFileData = function (data, start, end, seq) {
     }
 
     if (this.playerState == playerStatePausing) {
-        setTimeout(() => {
-            this.resume();
-        }, 0);
+        if (this.seeking) {
+            setTimeout(() => {
+                this.resume();
+            }, 0);
+        } else {
+            return;
+        }
     }
 
     var len = end - start + 1;
