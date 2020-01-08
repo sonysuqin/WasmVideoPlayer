@@ -19,6 +19,10 @@ const kCloseDownloaderReq   = 2;
 const kGetFileInfoRsp       = 0;
 const kFileData             = 1;
 
+//Downloader Protocol.
+const kProtoHttp            = 0;
+const kProtoWebsocket       = 1;
+
 //Decoder request.
 const kInitDecoderReq       = 0;
 const kUninitDecoderReq     = 1;

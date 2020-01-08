@@ -13,6 +13,11 @@ const playerStatePausing        = 2;
 const maxVideoFrameQueueSize    = 16;
 const downloadSpeedByteRateCoef = 1.5;
 
+String.prototype.startWith = function(str) {
+    var reg = new RegExp("^" + str);
+    return reg.test(this);
+};
+
 function FileInfo(url) {
     this.url = url;
     this.size = 0;
@@ -45,6 +50,7 @@ function Player() {
     this.chunkInterval      = 200;
     this.downloadSeqNo      = 0;
     this.downloading        = false;
+    this.downloadProto      = kProtoHttp;
     this.timeLabel          = null;
     this.timeTrack          = null;
     this.trackTimer         = null;
@@ -168,6 +174,12 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength) {
             break
         }
 
+        if (url.startWith("ws://") || url.startWith("wss://")) {
+            this.downloadProto = kProtoWebsocket;
+        } else {
+            this.downloadProto = kProtoHttp;
+        }
+
         this.fileInfo = new FileInfo(url);
         this.canvas = canvas;
         this.callback = callback;
@@ -183,7 +195,8 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength) {
 
         var req = {
             t: kGetFileInfoReq,
-            u: url
+            u: url,
+            p: this.downloadProto
         };
         this.downloadWorker.postMessage(req);
     } while (false);
@@ -736,7 +749,8 @@ Player.prototype.downloadOneChunk = function () {
         u: this.fileInfo.url,
         s: start,
         e: end,
-        q: this.downloadSeqNo
+        q: this.downloadSeqNo,
+        p: this.downloadProto
     };
     this.downloadWorker.postMessage(req);
     this.downloading = true;

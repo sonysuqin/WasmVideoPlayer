@@ -16,6 +16,10 @@
             <span class="no-padding">
                 <img src="img/home.png" class="left" id="btnHome" title="Visit My Homepage" onclick="window.open('https://blog.csdn.net/sonysuqin')" />
             </span>
+            <div id="protoDiv" >
+                <input type="radio" name ="protocol" value="http" checked>http
+                <input type="radio" name ="protocol" value="websocket">websocket
+            </div>
         </div>
         <div class="canvasDiv">
             <div class="loadEffect" id="loading" style="display:none;">
@@ -63,13 +67,19 @@
         var loadingDiv = document.getElementById("loading");
         self.player.setLoadingDiv(loadingDiv);
 
-        //File url.
-        var videoFileUrl = "video/h265_high.mp4";
-
         //Formated logger.
         var logger = new Logger("Page");
 
         function playVideo() {
+            //File url.
+            var videoFileUrl = null;
+            var proto = document.getElementsByName('protocol');
+            if (proto[1].checked) {
+                videoFileUrl = "ws://roblin.cn:8080/h265_high.mp4";
+            } else {
+                videoFileUrl = "video/h265_high.mp4";
+            }
+
             var el = document.getElementById("btnPlayVideo");
             var currentState = self.player.getState();
             if (currentState == playerStatePlaying) {
@@ -107,6 +117,7 @@
             self.player.stop();
             var button = document.getElementById("btnPlayVideo");
             button.value = "Play";
+            button.src = "img/play.png";
         }
 
         function fullscreen() {

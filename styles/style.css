@@ -175,3 +175,10 @@
     font-size: 14px;
     letter-spacing: 1px;
 }
+
+#protoDiv {
+    float: right;
+    margin-right: 10px;
+    margin-top: 2px;
+    font-size: 14px;
+}
