@@ -11,7 +11,7 @@ const playerStatePausing        = 2;
 
 //Constant.
 const maxVideoFrameQueueSize    = 16;
-const downloadSpeedByteRateCoef = 1.5;
+const downloadSpeedByteRateCoef = 3.0;
 
 String.prototype.startWith = function(str) {
     var reg = new RegExp("^" + str);
@@ -63,6 +63,8 @@ function Player() {
     this.justSeeked         = false;  // Flag to preventing multi seek from ffmpeg.
     this.urgent             = false;
     this.loadingDiv         = null;
+    this.buffering          = false;
+    this.frameBuffer        = [];
     this.logger             = new Logger("Player");
     this.initDownloadWorker();
     this.initDecodeWorker();
@@ -245,7 +247,7 @@ Player.prototype.pause = function () {
     return ret;
 };
 
-Player.prototype.resume = function () {
+Player.prototype.resume = function (discardAudio) {
     this.logger.logInfo("Resume.");
 
     if (this.playerState != playerStatePausing) {
@@ -256,14 +258,18 @@ Player.prototype.resume = function () {
         return ret;
     }
 
-    //Resume audio context.
-    this.pcmPlayer.resume();
+    if (discardAudio) {
+        this.audioQueue.length = 0;
+    } else {
+        //Resume audio context.
+        this.pcmPlayer.resume();
 
-    //Flush cached flying audio data under pausing state.
-    while (this.audioQueue.length > 0) {
-        //this.logger.logDebug("Flush one cache audio.");
-        var data = this.audioQueue.shift();
-        this.pcmPlayer.play(data);
+        //Flush cached flying audio data under pausing state.
+        while (this.audioQueue.length > 0) {
+            //this.logger.logDebug("Flush one cache audio.");
+            var data = this.audioQueue.shift();
+            this.pcmPlayer.play(data);
+        }
     }
 
     //If there's a flying video renderer op, interrupt it.
@@ -319,6 +325,7 @@ Player.prototype.stop = function () {
     this.videoHeight        = 0;
     this.yLength            = 0;
     this.uvLength           = 0;
+    this.beginTimeOffset    = 0;
     this.decoderState       = decoderStateIdle;
     this.playerState        = playerStateIdle;
     this.decoding           = false;
@@ -437,7 +444,8 @@ Player.prototype.onFileData = function (data, start, end, seq) {
     if (this.playerState == playerStatePausing) {
         if (this.seeking) {
             setTimeout(() => {
-                this.resume();
+                let discardAudio = true;
+                this.resume(discardAudio);
             }, 0);
         } else {
             return;
