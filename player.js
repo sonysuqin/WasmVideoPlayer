@@ -319,6 +319,7 @@ Player.prototype.stop = function () {
     this.playerState        = playerStateIdle;
     this.decoding           = false;
     this.frameBuffer        = [];
+    this.buffering          = false;
 
     if (this.pcmPlayer) {
         this.pcmPlayer.destroy();
@@ -619,7 +620,7 @@ Player.prototype.bufferFrame = function (frame) {
     //this.logger.logInfo("bufferFrame " + frame.s + ", seq " + frame.q);
     if (this.getBufferTimerLength() >= maxBufferTimeLength || this.decoderState == decoderStateFinished) {
         if (this.decoding) {
-            this.logger.logInfo("Frame buffer time length >= " + maxBufferTimeLength + ", pause decoding.");
+            //this.logger.logInfo("Frame buffer time length >= " + maxBufferTimeLength + ", pause decoding.");
             this.pauseDecoding();
         }
         if (this.buffering) {
@@ -744,7 +745,7 @@ Player.prototype.displayLoop = function() {
 
     if (this.getBufferTimerLength() < maxBufferTimeLength / 2) {
         if (!this.decoding) {
-            this.logger.logInfo("Buffer time length < " + maxBufferTimeLength / 2 + ", restart decoding.");
+            //this.logger.logInfo("Buffer time length < " + maxBufferTimeLength / 2 + ", restart decoding.");
             this.startDecoding();
         }
     }
