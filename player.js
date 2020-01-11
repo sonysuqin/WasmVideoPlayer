@@ -10,8 +10,8 @@ const playerStatePlaying        = 1;
 const playerStatePausing        = 2;
 
 //Constant.
-const maxVideoFrameQueueSize    = 16;
-const downloadSpeedByteRateCoef = 3.0;
+const maxBufferTimeLength       = 1.0;
+const downloadSpeedByteRateCoef = 2.0;
 
 String.prototype.startWith = function(str) {
     var reg = new RegExp("^" + str);
@@ -43,8 +43,6 @@ function Player() {
     this.playerState        = playerStateIdle;
     this.decoding           = false;
     this.decodeInterval     = 5;
-    this.audioQueue         = [];
-    this.videoQueue         = [];
     this.videoRendererTimer = null;
     this.downloadTimer      = null;
     this.chunkInterval      = 200;
@@ -247,7 +245,7 @@ Player.prototype.pause = function () {
     return ret;
 };
 
-Player.prototype.resume = function (discardAudio) {
+Player.prototype.resume = function (fromSeek) {
     this.logger.logInfo("Resume.");
 
     if (this.playerState != playerStatePausing) {
@@ -258,18 +256,9 @@ Player.prototype.resume = function (discardAudio) {
         return ret;
     }
 
-    if (discardAudio) {
-        this.audioQueue.length = 0;
-    } else {
+    if (!fromSeek) {
         //Resume audio context.
         this.pcmPlayer.resume();
-
-        //Flush cached flying audio data under pausing state.
-        while (this.audioQueue.length > 0) {
-            //this.logger.logDebug("Flush one cache audio.");
-            var data = this.audioQueue.shift();
-            this.pcmPlayer.play(data);
-        }
     }
 
     //If there's a flying video renderer op, interrupt it.
@@ -329,8 +318,7 @@ Player.prototype.stop = function () {
     this.decoderState       = decoderStateIdle;
     this.playerState        = playerStateIdle;
     this.decoding           = false;
-    this.audioQueue         = [];
-    this.videoQueue         = [];
+    this.frameBuffer        = [];
 
     if (this.pcmPlayer) {
         this.pcmPlayer.destroy();
@@ -359,11 +347,8 @@ Player.prototype.seekTo = function(ms) {
     // Stop download.
     this.stopDownloadTimer();
 
-    // Clear video queue.
-    this.videoQueue.length = 0;
-
-    // Clear audio queue.
-    this.audioQueue.length = 0;
+    // Clear frame buffer.
+    this.frameBuffer.length = 0;
 
     // Request decoder to seek.
     this.decodeWorker.postMessage({
@@ -372,12 +357,12 @@ Player.prototype.seekTo = function(ms) {
     });
 
     // Reset begin time offset.
-    //this.logger.logInfo("this.beginTimeOffset = -1");
     this.beginTimeOffset = ms / 1000;
+    this.logger.logInfo("seekTo beginTimeOffset " + this.beginTimeOffset);
 
     this.seeking = true;
     this.justSeeked = true;
-    this.showLoading();
+    this.startBuffering();
 };
 
 Player.prototype.fullscreen = function () {
@@ -444,8 +429,7 @@ Player.prototype.onFileData = function (data, start, end, seq) {
     if (this.playerState == playerStatePausing) {
         if (this.seeking) {
             setTimeout(() => {
-                let discardAudio = true;
-                this.resume(discardAudio);
+                this.resume(true);
             }, 0);
         } else {
             return;
@@ -626,9 +610,27 @@ Player.prototype.restartAudio = function () {
     });
 };
 
-Player.prototype.onAudioFrame = function (frame) {
-    if (this.playerState != playerStatePlaying) {
+Player.prototype.bufferFrame = function (frame) {
+    // If not decoding, it may be frame before seeking, should be discarded.
+    if (!this.decoding) {
         return;
+    }
+    this.frameBuffer.push(frame);
+    //this.logger.logInfo("bufferFrame " + frame.s + ", seq " + frame.q);
+    if (this.getBufferTimerLength() >= maxBufferTimeLength || this.decoderState == decoderStateFinished) {
+        if (this.decoding) {
+            this.logger.logInfo("Frame buffer time length >= " + maxBufferTimeLength + ", pause decoding.");
+            this.pauseDecoding();
+        }
+        if (this.buffering) {
+            this.stopBuffering();
+        }
+    }
+}
+
+Player.prototype.displayAudioFrame = function (frame) {
+    if (this.playerState != playerStatePlaying) {
+        return false;
     }
 
     if (this.seeking) {
@@ -638,25 +640,36 @@ Player.prototype.onAudioFrame = function (frame) {
         this.seeking = false;
     }
 
-    switch (this.playerState) {
-        case playerStatePlaying: //Directly display audio.
-            this.pcmPlayer.play(new Uint8Array(frame.d));
-            break;
-        case playerStatePausing: //Temp cache.
-            this.audioQueue.push(new Uint8Array(frame.d));
-            break;
-        default:
-    }
+    this.pcmPlayer.play(new Uint8Array(frame.d));
+    return true;
+};
+
+Player.prototype.onAudioFrame = function (frame) {
+    this.bufferFrame(frame);
 };
 
 Player.prototype.onDecodeFinished = function (objData) {
     this.pauseDecoding();
     this.decoderState   = decoderStateFinished;
-}
+};
+
+Player.prototype.getBufferTimerLength = function() {
+    if (!this.frameBuffer || this.frameBuffer.length == 0) {
+        return 0;
+    }
+
+    let oldest = this.frameBuffer[0];
+    let newest = this.frameBuffer[this.frameBuffer.length - 1];
+    return newest.s - oldest.s;
+};
 
 Player.prototype.onVideoFrame = function (frame) {
+    this.bufferFrame(frame);
+};
+
+Player.prototype.displayVideoFrame = function (frame) {
     if (this.playerState != playerStatePlaying) {
-        return;
+        return false;
     }
 
     if (this.seeking) {
@@ -666,14 +679,18 @@ Player.prototype.onVideoFrame = function (frame) {
         this.seeking = false;
     }
 
-    //Queue video frames for memory controlling.
-    this.videoQueue.push(frame);
-    if (this.videoQueue.length >= maxVideoFrameQueueSize) {
-        if (this.decoding) {
-            //this.logger.logInfo("Image queue size >= " + maxVideoFrameQueueSize + ", pause decoding.");
-            this.pauseDecoding();
-        }
+    var audioCurTs = this.pcmPlayer.getTimestamp();
+    var audioTimestamp = audioCurTs + this.beginTimeOffset;
+    var delay = frame.s - audioTimestamp;
+
+    //this.logger.logInfo("displayVideoFrame delay=" + delay + "=" + " " + frame.s  + " - (" + audioCurTs  + " + " + this.beginTimeOffset + ")" + "->" + audioTimestamp);
+
+    if (audioTimestamp <= 0 || delay <= 0) {
+        var data = new Uint8Array(frame.d);
+        this.renderVideoFrame(data);
+        return true;
     }
+    return false;
 };
 
 Player.prototype.onSeekToRsp = function (ret) {
@@ -701,38 +718,58 @@ Player.prototype.displayLoop = function() {
         return;
     }
 
-    if (this.videoQueue.length == 0) {
+    if (this.frameBuffer.length == 0) {
         return;
     }
 
-    var frame = this.videoQueue[0];
-    var audioCurTs = this.pcmPlayer.getTimestamp();
-    var audioTimestamp = audioCurTs + this.beginTimeOffset;
-    var delay = frame.s - audioTimestamp;
+    if (this.buffering) {
+        return;
+    }
 
-    //this.logger.logInfo("displayLoop delay=" + delay + "=" + " " + frame.s  + " - (" + audioCurTs  + " + " + this.beginTimeOffset + ")" + "->" + audioTimestamp);
-
-    if (audioTimestamp <= 0 || delay <= 0) {
-        var data = new Uint8Array(frame.d);
-        this.renderVideoFrame(data);
-
-        this.videoQueue.shift();
-
-        if (this.videoQueue.length < maxVideoFrameQueueSize / 2) {
-            if (!this.decoding) {
-                //this.logger.logInfo("Image queue size < " + maxVideoFrameQueueSize / 2 + ", restart decoding.");
-                this.startDecoding();
+    var frame = this.frameBuffer[0];
+    switch (frame.t) {
+        case kAudioFrame:
+            if (this.displayAudioFrame(frame)) {
+                this.frameBuffer.shift();
             }
+            break;
+        case kVideoFrame:
+            if (this.displayVideoFrame(frame)) {
+                this.frameBuffer.shift();
+            }
+            break;
+        default:
+            return;
+    }
+
+    if (this.getBufferTimerLength() < maxBufferTimeLength / 2) {
+        if (!this.decoding) {
+            this.logger.logInfo("Buffer time length < " + maxBufferTimeLength / 2 + ", restart decoding.");
+            this.startDecoding();
         }
+    }
 
-        if (this.videoQueue.length == 0) {
-            if (this.decoderState == decoderStateFinished) {
-                this.reportPlayError(1, 0, "Finished");
-                this.stop();
-            }
+    if (this.bufferFrame.length == 0) {
+        if (this.decoderState == decoderStateFinished) {
+            this.reportPlayError(1, 0, "Finished");
+            this.stop();
+        } else {
+            this.startBuffering();
         }
     }
 };
+
+Player.prototype.startBuffering = function () {
+    this.buffering = true;
+    this.showLoading();
+    this.pause();
+}
+
+Player.prototype.stopBuffering = function () {
+    this.buffering = false;
+    this.hideLoading();
+    this.resume();
+}
 
 Player.prototype.renderVideoFrame = function (data) {
     this.webglPlayer.renderFrame(data, this.videoWidth, this.videoHeight, this.yLength, this.uvLength);
@@ -785,7 +822,6 @@ Player.prototype.stopDownloadTimer = function () {
     if (this.downloadTimer != null) {
         clearInterval(this.downloadTimer);
         this.downloadTimer = null;
-        this.logger.logInfo("Download timer stopped.");
     }
     this.downloading = false;
 };
