@@ -8,7 +8,9 @@ export EXPORTED_FUNCTIONS="[ \
     '_sendData', \
     '_decodeOnePacket', \
     '_seekTo', \
-    '_main'
+    '_main',
+    '_malloc',
+    '_free'
 ]"
 
 echo "Running Emscripten..."

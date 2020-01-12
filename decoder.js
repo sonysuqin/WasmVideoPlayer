@@ -203,7 +203,7 @@ Decoder.prototype.onWasmLoaded = function () {
             d: data
         };
         self.postMessage(objData, [objData.d.buffer]);
-    });
+    }, 'viid');
 
     this.audioCallback = Module.addFunction(function (buff, size, timestamp) {
         var outArray = Module.HEAPU8.subarray(buff, buff + size);
@@ -214,7 +214,7 @@ Decoder.prototype.onWasmLoaded = function () {
             d: data
         };
         self.postMessage(objData, [objData.d.buffer]);
-    });
+    }, 'viid');
 
     this.requestCallback = Module.addFunction(function (offset) {
         var objData = {
@@ -222,7 +222,7 @@ Decoder.prototype.onWasmLoaded = function () {
             o: offset
         };
         self.postMessage(objData);
-    });
+    }, 'vi');
 
     while (this.tmpReqQue.length > 0) {
         var req = this.tmpReqQue.shift();
