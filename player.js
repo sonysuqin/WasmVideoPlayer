@@ -327,6 +327,10 @@ Player.prototype.stop = function () {
         this.logger.logInfo("Pcm player released.");
     }
 
+    if (this.timeTrack) {
+        this.timeTrack.value = 0;
+    }
+
     this.logger.logInfo("Closing decoder.");
     this.decodeWorker.postMessage({
         t: kCloseDecoderReq
