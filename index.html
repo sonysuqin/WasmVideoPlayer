@@ -16,9 +16,13 @@
             <span class="no-padding">
                 <img src="img/home.png" class="left" id="btnHome" title="Visit My Homepage" onclick="window.open('https://blog.csdn.net/sonysuqin')" />
             </span>
-            <div id="protoDiv" >
-                <input type="radio" name ="protocol" value="http" checked>http
-                <input type="radio" name ="protocol" value="websocket">websocket
+            <div id="input">
+                <select id="protocol" onchange="onSelectProto()">
+                    <option value="http">HTTP</option>
+                    <option value="ws">WS</option>
+                    <option value="httpFlv">HTTP-FLV</option>
+                </select>
+                <input type="text" id="inputUrl" style="width:300px"/>
             </div>
         </div>
         <div class="canvasDiv">
@@ -61,6 +65,26 @@
     <script type='text/javascript' src="webgl.js"></script>
     <script type='text/javascript' src="player.js"></script>
     <script type='text/javascript'>
+        var defaultProtos = {
+            http: {
+                url: "https://roblin.cn/wasm/video/h265_high.mp4",
+                waitLength : 512 * 1024,
+                stream: false,
+            },
+            ws: {
+                url: "wss://roblin.cn/wss/h265_high.mp4",
+                waitLength : 512 * 1024,
+                stream: false,
+            },
+            httpFlv: {
+                url: "https://data.vod.itc.cn/bee/qf/lifangda?tok=e4da89d923e4e2af4d622a0edb717f88827b422a&format=flv&direct=1",
+                waitLength : 1024 * 1024,
+                stream: true,
+            }
+        };
+        let inputUrl = document.getElementById("inputUrl");
+        inputUrl.value = defaultProtos["http"]["url"];
+
         //Player object.
         self.player = new Player();
 
@@ -71,14 +95,9 @@
         var logger = new Logger("Page");
 
         function playVideo() {
-            //File url.
-            var videoFileUrl = null;
-            var proto = document.getElementsByName('protocol');
-            if (proto[1].checked) {
-                videoFileUrl = "wss://roblin.cn/wss/h265_high.mp4";
-            } else {
-                videoFileUrl = "video/h265_high.mp4";
-            }
+            var protoList = document.getElementById("protocol");
+            var proto = protoList.options[protoList.selectedIndex].value;
+            var protoObj = defaultProtos[proto];
 
             var el = document.getElementById("btnPlayVideo");
             var currentState = self.player.getState();
@@ -96,12 +115,12 @@
                     return false;
                 }
 
-                self.player.play(videoFileUrl, canvas, function (e) {
+                self.player.play(protoObj.url, canvas, function (e) {
                     console.log("play error " + e.error + " status " + e.status + ".");
                     if (e.error == 1) {
                         logger.logInfo("Finished.");
                     }
-                }, 524288);
+                }, protoObj.waitLength, protoObj.stream);
 
                 var timeTrack = document.getElementById("timeTrack");
                 var timeLabel = document.getElementById("timeLabel");
@@ -122,6 +141,14 @@
 
         function fullscreen() {
             self.player.fullscreen();
+        }
+
+        function onSelectProto() {
+            var protoList = document.getElementById("protocol");
+            var proto = protoList.options[protoList.selectedIndex].value;
+            var protoObj = defaultProtos[proto];
+            var inputUrl = document.getElementById("inputUrl");
+            inputUrl.value = protoObj["url"];
         }
     </script>
 </body>

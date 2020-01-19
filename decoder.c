@@ -13,12 +13,15 @@ extern "C" {
 
 #include "libavcodec/avcodec.h"
 #include "libavformat/avformat.h"
+#include "libavutil/fifo.h"
 //#include "libswscale/swscale.h"
 
 #define MIN(X, Y)  ((X) < (Y) ? (X) : (Y))
 
 const int kCustomIoBufferSize = 32 * 1024;
 const int kInitialPcmBufferSize = 128 * 1024;
+const int kDefaultFifoSize = 1 * 1024 * 1024;
+const int kMaxFifoSize = 16 * 1024 * 1024;
 
 typedef enum ErrorCode {
     kErrorCode_Success = 0,
@@ -65,6 +68,10 @@ typedef struct WebDecoder {
     int64_t lastRequestOffset;
     double beginTimeOffset;
     int accurateSeek;
+    // For streaming.
+    int isStream;
+    AVFifoBuffer *fifo;
+    int fifoSize;
 }WebDecoder;
 
 WebDecoder *decoder = NULL;
@@ -432,19 +439,15 @@ ErrorCode decodePacket(AVPacket *pkt, int *decodedLen) {
     return kErrorCode_Success;
 }
 
-int readCallback(void *opaque, uint8_t *data, int len) {
-    //simpleLog("readCallback %d.", len);
-    int32_t ret			= -1;
-    int availableBytes	= 0;
-    int canReadLen		= 0;
+int readFromFile(uint8_t *data, int len) {
+    //simpleLog("readFromFile %d.", len);
+    int32_t ret         = -1;
+    int availableBytes  = 0;
+    int canReadLen      = 0;
     do {
-        if (decoder == NULL || decoder->fp == NULL) {
+        if (decoder->fp == NULL) {
             break;
         }
-
-        if (data == NULL || len <= 0) {
-            break;
-        }		
 
         availableBytes = decoder->fileWritePos - decoder->fileReadPos;
         if (availableBytes <= 0) {
@@ -457,6 +460,47 @@ int readCallback(void *opaque, uint8_t *data, int len) {
         decoder->fileReadPos += canReadLen;
         ret = canReadLen;
     } while (0);
+    //simpleLog("readFromFile ret %d.", ret);
+    return ret;
+}
+
+int readFromFifo(uint8_t *data, int len) {
+    //simpleLog("readFromFifo %d.", len);
+    int32_t ret         = -1;
+    int availableBytes  = 0;
+    int canReadLen      = 0;
+    do {
+        if (decoder->fifo == NULL) {
+            break;
+        }	
+
+        availableBytes = av_fifo_size(decoder->fifo);
+        if (availableBytes <= 0) {
+            break;
+        }
+
+        canReadLen = MIN(availableBytes, len);
+        av_fifo_generic_read(decoder->fifo, data, canReadLen, NULL);
+        ret = canReadLen;
+    } while (0);
+    //simpleLog("readFromFifo ret %d, left %d.", ret, av_fifo_size(decoder->fifo));
+    return ret;
+}
+
+int readCallback(void *opaque, uint8_t *data, int len) {
+    //simpleLog("readCallback %d.", len);
+    int32_t ret         = -1;
+    do {
+        if (decoder == NULL) {
+            break;
+        }
+
+        if (data == NULL || len <= 0) {
+            break;
+        }		
+
+        ret = decoder->isStream ? readFromFifo(data, len) : readFromFile(data, len);
+    } while (0);
     //simpleLog("readCallback ret %d.", ret);
     return ret;
 }
@@ -467,7 +511,7 @@ int64_t seekCallback(void *opaque, int64_t offset, int whence) {
     int64_t req_pos     = -1;
     //simpleLog("seekCallback %lld %d.", offset, whence);
     do {
-        if (decoder == NULL || decoder->fp == NULL) {
+        if (decoder == NULL || decoder->isStream || decoder->fp == NULL) {
             break;
         }
 
@@ -508,6 +552,76 @@ int64_t seekCallback(void *opaque, int64_t offset, int whence) {
     return ret;
 }
 
+int writeToFile(unsigned char *buff, int size) {
+    int ret = 0;
+    int64_t leftBytes = 0;
+    int canWriteBytes = 0;
+    do {
+        if (decoder->fp == NULL) {
+            ret = -1;
+            break;
+        }
+
+        leftBytes = decoder->fileSize - decoder->fileWritePos;
+        if (leftBytes <= 0) {
+            break;
+        }
+
+        canWriteBytes = MIN(leftBytes, size);
+        fseek(decoder->fp, decoder->fileWritePos, SEEK_SET);
+        fwrite(buff, canWriteBytes, 1, decoder->fp);
+        decoder->fileWritePos += canWriteBytes;
+        ret = canWriteBytes;
+    } while (0);
+    return ret;
+}
+
+int writeToFifo(unsigned char *buff, int size) {
+    int ret = 0;
+    do {
+        if (decoder->fifo == NULL) {
+            ret = -1;
+            break;
+        }
+
+        int64_t leftSpace = av_fifo_space(decoder->fifo);
+        if (leftSpace < size) {
+            int growSize = 0;
+            do {
+                leftSpace += decoder->fifoSize;
+                growSize += decoder->fifoSize;
+                decoder->fifoSize += decoder->fifoSize;
+            } while (leftSpace < size);
+            av_fifo_grow(decoder->fifo, growSize);
+
+            simpleLog("Fifo size growed to %d.", decoder->fifoSize);
+            if (decoder->fifoSize >= kMaxFifoSize) {
+                simpleLog("[Warn] Fifo size larger than %d.", kMaxFifoSize);
+            }
+        }
+
+        //simpleLog("Wrote %d bytes to fifo, total %d.", size, av_fifo_size(decoder->fifo));
+        ret = av_fifo_generic_write(decoder->fifo, buff, size, NULL);
+    } while (0);
+    return ret;
+}
+
+int getAailableDataSize() {
+    int ret = 0;
+    do {
+        if (decoder == NULL) {
+            break;
+        }
+
+        if (decoder->isStream) {
+            ret = decoder->fifo == NULL ? 0 : av_fifo_size(decoder->fifo);
+        } else {
+            ret = decoder->fileWritePos - decoder->fileReadPos;
+        }
+    } while (0);
+    return ret;
+}
+
 //////////////////////////////////Export methods////////////////////////////////////////
 ErrorCode initDecoder(int fileSize, int logLv) {
     ErrorCode ret = kErrorCode_Success;
@@ -520,14 +634,20 @@ ErrorCode initDecoder(int fileSize, int logLv) {
         }
 
         decoder = (WebDecoder *)av_mallocz(sizeof(WebDecoder));
-        decoder->fileSize = fileSize;
-        sprintf(decoder->fileName, "tmp-%lu.mp4", getTickCount());
-        decoder->fp = fopen(decoder->fileName, "wb+");
-        if (decoder->fp == NULL) {
-            simpleLog("Open file %s failed, err: %d.", decoder->fileName, errno);
-            ret = kErrorCode_Open_File_Error;
-            av_free(decoder);
-            decoder = NULL;
+        if (fileSize >= 0) {
+            decoder->fileSize = fileSize;
+            sprintf(decoder->fileName, "tmp-%lu.mp4", getTickCount());
+            decoder->fp = fopen(decoder->fileName, "wb+");
+            if (decoder->fp == NULL) {
+                simpleLog("Open file %s failed, err: %d.", decoder->fileName, errno);
+                ret = kErrorCode_Open_File_Error;
+                av_free(decoder);
+                decoder = NULL;
+            }
+        } else {
+            decoder->isStream = 1;
+            decoder->fifoSize = kDefaultFifoSize;
+            decoder->fifo = av_fifo_alloc(decoder->fifoSize);
         }
     } while (0);
     simpleLog("Decoder initialized %d.", ret);
@@ -539,9 +659,13 @@ ErrorCode uninitDecoder() {
         if (decoder->fp != NULL) {
             fclose(decoder->fp);
             decoder->fp = NULL;
+            remove(decoder->fileName);
         }
 
-        remove(decoder->fileName);
+        if (decoder->fifo != NULL) {
+             av_fifo_freep(&decoder->fifo);
+        }
+
         av_freep(&decoder);
     }
 
@@ -767,7 +891,7 @@ int sendData(unsigned char *buff, int size) {
     int64_t leftBytes = 0;
     int canWriteBytes = 0;
     do {
-        if (decoder == NULL || decoder->fp == NULL) {
+        if (decoder == NULL) {
             ret = -1;
             break;
         }
@@ -777,16 +901,7 @@ int sendData(unsigned char *buff, int size) {
             break;
         }
 
-        leftBytes = decoder->fileSize - decoder->fileWritePos;
-        if (leftBytes <= 0) {
-            break;
-        }
-
-        canWriteBytes = MIN(leftBytes, size);
-        fseek(decoder->fp, decoder->fileWritePos, SEEK_SET);
-        fwrite(buff, canWriteBytes, 1, decoder->fp);
-        decoder->fileWritePos += canWriteBytes;
-        ret = canWriteBytes;
+        ret = decoder->isStream ? writeToFifo(buff, size) : writeToFile(buff, size);
     } while (0);
     return ret;
 }
@@ -804,7 +919,7 @@ ErrorCode decodeOnePacket() {
             break;
         }
 
-        if (decoder->fileWritePos - decoder->fileReadPos <= 0) {
+        if (getAailableDataSize() <= 0) {
             ret = kErrorCode_Invalid_State;
             break;
         }

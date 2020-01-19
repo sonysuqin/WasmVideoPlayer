@@ -63,6 +63,11 @@ function Player() {
     this.loadingDiv         = null;
     this.buffering          = false;
     this.frameBuffer        = [];
+    this.isStream           = false;
+    this.streamReceivedlen  = 0;
+    this.firstAudioFrame    = true;
+    this.fetchController    = null;
+    this.streamPauseParam   = null;
     this.logger             = new Logger("Player");
     this.initDownloadWorker();
     this.initDecodeWorker();
@@ -115,7 +120,7 @@ Player.prototype.initDecodeWorker = function () {
     }
 };
 
-Player.prototype.play = function (url, canvas, callback, waitHeaderLength) {
+Player.prototype.play = function (url, canvas, callback, waitHeaderLength, isStream) {
     this.logger.logInfo("Play " + url + ".");
 
     var ret = {
@@ -185,6 +190,7 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength) {
         this.callback = callback;
         this.waitHeaderLength = waitHeaderLength || this.waitHeaderLength;
         this.playerState = playerStatePlaying;
+        this.isStream = isStream;
         this.startTrackTimer();
         this.displayLoop();
 
@@ -193,12 +199,20 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength) {
             preserveDrawingBuffer: false
         });
 
-        var req = {
-            t: kGetFileInfoReq,
-            u: url,
-            p: this.downloadProto
-        };
-        this.downloadWorker.postMessage(req);
+        if (!this.isStream) {
+            var req = {
+                t: kGetFileInfoReq,
+                u: url,
+                p: this.downloadProto
+            };
+            this.downloadWorker.postMessage(req);
+        } else {
+            this.requestStream(url);
+            this.onGetFileInfo({
+                sz: -1,
+                st: 200
+            });
+        }
 
         var self = this;
         this.registerVisibilityEvent(function(visible) {
@@ -208,12 +222,46 @@ Player.prototype.play = function (url, canvas, callback, waitHeaderLength) {
                 self.pause();
             }
         });
+
+        this.buffering = true;
+        this.showLoading();
     } while (false);
 
     return ret;
 };
 
+Player.prototype.pauseStream = function () {
+    if (this.playerState != playerStatePlaying) {
+        var ret = {
+            e: -1,
+            m: "Not playing"
+        };
+        return ret;
+    }
+
+    this.streamPauseParam = {
+        url: this.fileInfo.url,
+        canvas: this.canvas,
+        callback: this.callback,
+        waitHeaderLength: this.waitHeaderLength
+    }
+
+    this.logger.logInfo("Stop in stream pause.");
+    this.stop();
+
+    var ret = {
+        e: 0,
+        m: "Success"
+    };
+
+    return ret;
+}
+
 Player.prototype.pause = function () {
+    if (this.isStream) {
+        return this.pauseStream();
+    }
+
     this.logger.logInfo("Pause.");
 
     if (this.playerState != playerStatePlaying) {
@@ -228,7 +276,9 @@ Player.prototype.pause = function () {
     this.playerState = playerStatePausing;
 
     //Pause audio context.
-    this.pcmPlayer.pause();
+    if (this.pcmPlayer) {
+        this.pcmPlayer.pause();
+    }
 
     //Pause decoding.
     this.pauseDecoding();
@@ -245,7 +295,36 @@ Player.prototype.pause = function () {
     return ret;
 };
 
+Player.prototype.resumeStream = function () {
+    if (this.playerState != playerStateIdle || !this.streamPauseParam) {
+        var ret = {
+            e: -1,
+            m: "Not pausing"
+        };
+        return ret;
+    }
+
+    this.logger.logInfo("Play in stream resume.");
+    this.play(this.streamPauseParam.url,
+              this.streamPauseParam.canvas,
+              this.streamPauseParam.callback,
+              this.streamPauseParam.waitHeaderLength,
+              true);
+    this.streamPauseParam = null;
+
+    var ret = {
+        e: 0,
+        m: "Success"
+    };
+
+    return ret;
+}
+
 Player.prototype.resume = function (fromSeek) {
+    if (this.isStream) {
+        return this.resumeStream();
+    }
+
     this.logger.logInfo("Resume.");
 
     if (this.playerState != playerStatePausing) {
@@ -320,6 +399,8 @@ Player.prototype.stop = function () {
     this.decoding           = false;
     this.frameBuffer        = [];
     this.buffering          = false;
+    this.streamReceivedlen  = 0;
+    this.firstAudioFrame    = true;
 
     if (this.pcmPlayer) {
         this.pcmPlayer.destroy();
@@ -342,10 +423,19 @@ Player.prototype.stop = function () {
         t: kUninitDecoderReq
     });
 
+    if (this.fetchController) {
+        this.fetchController.abort();
+        this.fetchController = null;
+    }
+
     return ret;
 };
 
 Player.prototype.seekTo = function(ms) {
+    if (this.isStream) {
+        return;
+    }
+
     // Pause playing.
     this.pause();
 
@@ -497,7 +587,9 @@ Player.prototype.onInitDecoder = function (objData) {
 
     this.logger.logInfo("Init decoder response " + objData.e + ".");
     if (objData.e == 0) {
-        this.downloadOneChunk();
+        if (!this.isStream) {
+            this.downloadOneChunk();
+        }
     } else {
         this.reportPlayError(objData.e);
     }
@@ -554,7 +646,9 @@ Player.prototype.onVideoParam = function (v) {
     var chunkPerSecond = targetSpeed / this.fileInfo.chunkSize;
     this.chunkInterval = 1000 / chunkPerSecond;
 
-    this.startDownloadTimer();
+    if (!this.isStream) {
+        this.startDownloadTimer();
+    }
 
     this.logger.logInfo("Byte rate:" + byteRate + " target speed:" + targetSpeed + " chunk interval:" + this.chunkInterval + ".");
 };
@@ -645,6 +739,11 @@ Player.prototype.displayAudioFrame = function (frame) {
         this.seeking = false;
     }
 
+    if (this.isStream && this.firstAudioFrame) {
+        this.firstAudioFrame = false;
+        this.beginTimeOffset = frame.s;
+    }
+
     this.pcmPlayer.play(new Uint8Array(frame.d));
     return true;
 };
@@ -731,20 +830,30 @@ Player.prototype.displayLoop = function() {
         return;
     }
 
-    var frame = this.frameBuffer[0];
-    switch (frame.t) {
-        case kAudioFrame:
-            if (this.displayAudioFrame(frame)) {
-                this.frameBuffer.shift();
-            }
+    // requestAnimationFrame may be 60fps, if stream fps too large, 
+    // we need to render more frames in one loop, otherwise display
+    // fps won't catch up with source fps, leads to memory increasing,
+    // set to 2 now.
+    for (i = 0; i < 2; ++i) {
+        var frame = this.frameBuffer[0];
+        switch (frame.t) {
+            case kAudioFrame:
+                if (this.displayAudioFrame(frame)) {
+                    this.frameBuffer.shift();
+                }
+                break;
+            case kVideoFrame:
+                if (this.displayVideoFrame(frame)) {
+                    this.frameBuffer.shift();
+                }
+                break;
+            default:
+                return;
+        }
+
+        if (this.frameBuffer.length == 0) {
             break;
-        case kVideoFrame:
-            if (this.displayVideoFrame(frame)) {
-                this.frameBuffer.shift();
-            }
-            break;
-        default:
-            return;
+        }
     }
 
     if (this.getBufferTimerLength() < maxBufferTimeLength / 2) {
@@ -781,7 +890,7 @@ Player.prototype.renderVideoFrame = function (data) {
 };
 
 Player.prototype.downloadOneChunk = function () {
-    if (this.downloading) {
+    if (this.downloading || this.isStream) {
         return;
     }
 
@@ -957,3 +1066,65 @@ Player.prototype.registerVisibilityEvent = function (cb) {
         onchange({type: document[hidden] ? "blur" : "focus"});
     }
 }
+
+Player.prototype.onStreamDataUnderDecoderIdle = function (length) {
+    if (this.streamReceivedlen >= this.waitHeaderLength) {
+        this.logger.logInfo("Opening decoder.");
+        this.decoderState = decoderStateInitializing;
+        var req = {
+            t: kOpenDecoderReq
+        };
+        this.decodeWorker.postMessage(req);
+    } else {
+        this.streamReceivedlen += length;
+    }
+};
+
+Player.prototype.requestStream = function (url) {
+    var self = this;
+    this.fetchController = new AbortController();
+    const signal = this.fetchController.signal;
+
+    fetch(url, {signal}).then(async function respond(response) {
+        const reader = response.body.getReader();
+        reader.read().then(function processData({done, value}) {
+            if (done) {
+                self.logger.logInfo("Stream done.");
+                return;
+            }
+
+            if (self.playerState != playerStatePlaying) {
+                return;
+            }
+
+            var dataLength = value.byteLength;
+            var offset = 0;
+            if (dataLength > self.fileInfo.chunkSize) {
+                do {
+                    let len = Math.min(self.fileInfo.chunkSize, dataLength);
+                    var data = value.buffer.slice(offset, offset + len);
+                    dataLength -= len;
+                    offset += len;
+                    var objData = {
+                        t: kFeedDataReq,
+                        d: data
+                    };
+                    self.decodeWorker.postMessage(objData, [objData.d]);
+                } while (dataLength > 0)
+            } else {
+                var objData = {
+                    t: kFeedDataReq,
+                    d: value.buffer
+                };
+                self.decodeWorker.postMessage(objData, [objData.d]);
+            }
+
+            if (self.decoderState == decoderStateIdle) {
+                self.onStreamDataUnderDecoderIdle(dataLength);
+            }
+
+            return reader.read().then(processData);
+        });
+    }).catch(err => {
+    });
+};
