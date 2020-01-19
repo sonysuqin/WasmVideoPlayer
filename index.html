@@ -98,6 +98,8 @@
             var protoList = document.getElementById("protocol");
             var proto = protoList.options[protoList.selectedIndex].value;
             var protoObj = defaultProtos[proto];
+            var inputUrl = document.getElementById("inputUrl");
+            var url = inputUrl.value;
 
             var el = document.getElementById("btnPlayVideo");
             var currentState = self.player.getState();
@@ -115,7 +117,7 @@
                     return false;
                 }
 
-                self.player.play(protoObj.url, canvas, function (e) {
+                self.player.play(url, canvas, function (e) {
                     console.log("play error " + e.error + " status " + e.status + ".");
                     if (e.error == 1) {
                         logger.logInfo("Finished.");
