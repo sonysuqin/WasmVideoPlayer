@@ -60,11 +60,13 @@ function Player() {
     this.seeking            = false;  // Flag to preventing multi seek from track.
     this.justSeeked         = false;  // Flag to preventing multi seek from ffmpeg.
     this.urgent             = false;
+    this.seekWaitLen        = 524288; // Default wait for 512K, will be updated in onVideoParam.
+    this.seekReceivedLen    = 0;
     this.loadingDiv         = null;
     this.buffering          = false;
     this.frameBuffer        = [];
     this.isStream           = false;
-    this.streamReceivedlen  = 0;
+    this.streamReceivedLen  = 0;
     this.firstAudioFrame    = true;
     this.fetchController    = null;
     this.streamPauseParam   = null;
@@ -111,7 +113,7 @@ Player.prototype.initDecodeWorker = function () {
                 self.onDecodeFinished(objData);
                 break;
             case kRequestDataEvt:
-                self.onRequestData(objData.o);
+                self.onRequestData(objData.o, objData.a);
                 break;
             case kSeekToRsp:
                 self.onSeekToRsp(objData.r);
@@ -382,6 +384,7 @@ Player.prototype.stop = function () {
 
     this.stopDownloadTimer();
     this.stopTrackTimer();
+    this.hideLoading();
 
     this.fileInfo           = null;
     this.canvas             = null;
@@ -399,8 +402,10 @@ Player.prototype.stop = function () {
     this.decoding           = false;
     this.frameBuffer        = [];
     this.buffering          = false;
-    this.streamReceivedlen  = 0;
+    this.streamReceivedLen  = 0;
     this.firstAudioFrame    = true;
+    this.urgent             = false;
+    this.seekReceivedLen    = 0;
 
     if (this.pcmPlayer) {
         this.pcmPlayer.destroy();
@@ -457,6 +462,8 @@ Player.prototype.seekTo = function(ms) {
 
     this.seeking = true;
     this.justSeeked = true;
+    this.urgent = true;
+    this.seekReceivedLen = 0;
     this.startBuffering();
 };
 
@@ -523,9 +530,15 @@ Player.prototype.onFileData = function (data, start, end, seq) {
 
     if (this.playerState == playerStatePausing) {
         if (this.seeking) {
-            setTimeout(() => {
-                this.resume(true);
-            }, 0);
+            this.seekReceivedLen += data.byteLength;
+            let left = this.fileInfo.size - this.fileInfo.offset;
+            let seekWaitLen = Math.min(left, this.seekWaitLen);
+            if (this.seekReceivedLen >= seekWaitLen) {
+                this.logger.logInfo("Resume in seek now");
+                setTimeout(() => {
+                    this.resume(true);
+                }, 0);
+            }
         } else {
             return;
         }
@@ -645,6 +658,8 @@ Player.prototype.onVideoParam = function (v) {
     var targetSpeed = downloadSpeedByteRateCoef * byteRate;
     var chunkPerSecond = targetSpeed / this.fileInfo.chunkSize;
     this.chunkInterval = 1000 / chunkPerSecond;
+    this.seekWaitLen = byteRate * maxBufferTimeLength * 2;
+    this.logger.logInfo("Seek wait len " + this.seekWaitLen);
 
     if (!this.isStream) {
         this.startDownloadTimer();
@@ -737,6 +752,7 @@ Player.prototype.displayAudioFrame = function (frame) {
         this.startTrackTimer();
         this.hideLoading();
         this.seeking = false;
+        this.urgent = false;
     }
 
     if (this.isStream && this.firstAudioFrame) {
@@ -781,6 +797,7 @@ Player.prototype.displayVideoFrame = function (frame) {
         this.startTrackTimer();
         this.hideLoading();
         this.seeking = false;
+        this.urgent = false;
     }
 
     var audioCurTs = this.pcmPlayer.getTimestamp();
@@ -804,13 +821,25 @@ Player.prototype.onSeekToRsp = function (ret) {
     }
 };
 
-Player.prototype.onRequestData = function (offset) {
+Player.prototype.onRequestData = function (offset, available) {
     if (this.justSeeked) {
-        this.logger.logInfo("Request data " + offset);
-        if (offset >= 0 && offset < this.fileInfo.size) {
-            this.fileInfo.offset = offset;
-        } 
-        this.startDownloadTimer();
+        this.logger.logInfo("Request data " + offset + ", available " + available);
+        if (offset == -1) {
+            // Hit in buffer.
+            let left = this.fileInfo.size - this.fileInfo.offset;
+            if (available >= left) {
+                this.logger.logInfo("No need to wait");
+                this.resume();
+            } else {
+                this.startDownloadTimer();
+            }
+        } else {
+            if (offset >= 0 && offset < this.fileInfo.size) {
+                this.fileInfo.offset = offset;
+            } 
+            this.startDownloadTimer();
+        }
+
         //this.restartAudio();
         this.justSeeked = false;
     }
@@ -970,7 +999,7 @@ Player.prototype.updateTrackTime = function () {
 Player.prototype.startDecoding = function () {
     var req = {
         t: kStartDecodingReq,
-        i: this.decodeInterval
+        i: this.urgent ? 0 : this.decodeInterval,
     };
     this.decodeWorker.postMessage(req);
     this.decoding = true;
@@ -1068,7 +1097,7 @@ Player.prototype.registerVisibilityEvent = function (cb) {
 }
 
 Player.prototype.onStreamDataUnderDecoderIdle = function (length) {
-    if (this.streamReceivedlen >= this.waitHeaderLength) {
+    if (this.streamReceivedLen >= this.waitHeaderLength) {
         this.logger.logInfo("Opening decoder.");
         this.decoderState = decoderStateInitializing;
         var req = {
@@ -1076,7 +1105,7 @@ Player.prototype.onStreamDataUnderDecoderIdle = function (length) {
         };
         this.decodeWorker.postMessage(req);
     } else {
-        this.streamReceivedlen += length;
+        this.streamReceivedLen += length;
     }
 };
 

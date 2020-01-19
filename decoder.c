@@ -5,7 +5,7 @@
 
 typedef void(*VideoCallback)(unsigned char *buff, int size, double timestamp);
 typedef void(*AudioCallback)(unsigned char *buff, int size, double timestamp);
-typedef void(*RequestCallback)(int offset);
+typedef void(*RequestCallback)(int offset, int available);
 
 #ifdef __cplusplus
 extern "C" {
@@ -76,6 +76,8 @@ typedef struct WebDecoder {
 
 WebDecoder *decoder = NULL;
 LogLevel logLevel = kLogLevel_None;
+
+int getAailableDataSize();
 
 unsigned long getTickCount() {
     struct timespec ts;
@@ -536,7 +538,7 @@ int64_t seekCallback(void *opaque, int64_t offset, int whence) {
             decoder->fileWritePos       = pos;
             req_pos                     = pos;
             ret                         = -1;  // Forcing not to call read at once.
-            decoder->requestCallback(pos);
+            decoder->requestCallback(pos, getAailableDataSize());
             simpleLog("Will request %lld and return %lld.", pos, ret);
             break;
         }
@@ -547,7 +549,7 @@ int64_t seekCallback(void *opaque, int64_t offset, int whence) {
     //simpleLog("seekCallback return %lld.", ret);
 
     if (decoder != NULL && decoder->requestCallback != NULL) {
-        decoder->requestCallback(req_pos);
+        decoder->requestCallback(req_pos, getAailableDataSize());
     }
     return ret;
 }

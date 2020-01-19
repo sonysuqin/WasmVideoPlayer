@@ -9,7 +9,7 @@ self.importScripts("libffmpeg.js");
 
 function Decoder() {
     this.logger             = new Logger("Decoder");
-    this.coreLogLevel       = 0;
+    this.coreLogLevel       = 1;
     this.accurateSeek       = true;
     this.wasmLoaded         = false;
     this.tmpReqQue          = [];
@@ -216,13 +216,14 @@ Decoder.prototype.onWasmLoaded = function () {
         self.postMessage(objData, [objData.d.buffer]);
     }, 'viid');
 
-    this.requestCallback = Module.addFunction(function (offset) {
+    this.requestCallback = Module.addFunction(function (offset, availble) {
         var objData = {
             t: kRequestDataEvt,
-            o: offset
+            o: offset,
+            a: availble
         };
         self.postMessage(objData);
-    }, 'vi');
+    }, 'vii');
 
     while (this.tmpReqQue.length > 0) {
         var req = this.tmpReqQue.shift();
