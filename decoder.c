@@ -34,13 +34,13 @@ typedef enum ErrorCode {
     kErrorCode_Eof,
     kErrorCode_FFmpeg_Error,
     kErrorCode_Old_Frame
-}ErrorCode;
+} ErrorCode;
 
-typedef enum LogLevel{
+typedef enum LogLevel {
     kLogLevel_None, //Not logging.
     kLogLevel_Core, //Only logging core module(without ffmpeg).
     kLogLevel_All   //Logging all, with ffmpeg.
-}LogLevel;
+} LogLevel;
 
 typedef struct WebDecoder {
     AVFormatContext *avformatContext;
@@ -72,7 +72,7 @@ typedef struct WebDecoder {
     int isStream;
     AVFifoBuffer *fifo;
     int fifoSize;
-}WebDecoder;
+} WebDecoder;
 
 WebDecoder *decoder = NULL;
 LogLevel logLevel = kLogLevel_None;
