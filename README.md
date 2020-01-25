@@ -10,7 +10,7 @@ github地址: [https://github.com/sonysuqin/WasmVideoPlayer](https://github.com/
 
 # 3 依赖
 ## 3.1 WASM
-WASM的介绍在[这里](https://webassembly.org/)，可以在浏览器里执行原生代码(例如C、C++)，要开发可以在浏览器运行的原生代码，需要安装他的[工具链](https://emscripten.org/docs/getting_started/downloads.html)，我使用的是当时最新的版本(1.38.21)。编译环境有Ubuntu、MacOS等，[这里](https://emscripten.org/docs/getting_started/downloads.html#platform-notes-installation-instructions-sdk)有介绍。
+WASM的介绍在[这里](https://webassembly.org/)，可以在浏览器里执行原生代码(例如C、C++)，要开发可以在浏览器运行的原生代码，需要安装他的[工具链](https://emscripten.org/docs/getting_started/downloads.html)，我使用的是目前最新的版本(1.39.5)。编译环境有Ubuntu、MacOS等，[这里](https://emscripten.org/docs/getting_started/downloads.html#platform-notes-installation-instructions-sdk)有介绍。
 ## 3.2 FFmpeg
 主要使用FFmpeg来做解封装(demux)和解码(decoder)，由于使用了FFmpeg(3.3)，理论上可以播放绝大多数格式的视频，这里只针对H265编码、MP4封装，在编译时可以只按需编译最少的模块，从而得到比较小的库。
 
@@ -24,7 +24,7 @@ FFmpeg解码出来的音频数据是PCM格式，可以使用H5的Web Audio Api�
 [https://github.com/samirkumardas/pcm-player](https://github.com/samirkumardas/pcm-player)
 
 # 4 播放器实现
-这里只是简单实现了播放器的部分功能，包括下载、解封装、解码、渲染、音视频同步等基本功能，每个环节还有很多细节可以优化。seek还没有做，因为涉及的东西比较多。
+这里只是简单实现了播放器的部分功能，包括下载、解封装、解码、渲染、音视频同步等基本功能，每个环节还有很多细节可以优化。目前可以支持FFmpeg的各种内置codec，如H264/H265等，默认支持MP4/FLV文件播放、HTTP-FLV流的播放。
 ## 4.1 模块结构
 ![在这里插入图片描述](https://img-blog.csdnimg.cn/20190207123204349.png?x-oss-process=image/watermark,type_ZmFuZ3poZW5naGVpdGk,shadow_10,text_aHR0cHM6Ly9ibG9nLmNzZG4ubmV0L3NvbnlzdXFpbg==,size_16,color_FFFFFF,t_70)
 ## 4.2 线程模型
@@ -49,7 +49,7 @@ FFmpeg解码出来的音频数据是PCM格式，可以使用H5的Web Audio Api�
 ### 4.3.2 下载控制
 为防止播放器无限制地下载文件，在下载操作中占用过多的CPU，浪费过多带宽，这里在获取到文件码率之后，以码率一定倍数的速率下载文件。
 ### 4.3.3 缓冲控制
-为防止播放器无限制的解码占用过多的CPU，设置一个已解码视频帧队列长度的阈值，超过阈值则停止解码，队列消耗到一定程度后重启解码。
+缓存控制对这个播放器的意义重大，在这个时间点，WASM还无法使用多线程以及多线程的同步，FFmpeg的同步读数据接口必须保证返回数据。所以这里有两个措施，1：在未获取到文件元信息之前的数据缓存；2：解码帧缓存。必须控制好这两个缓存，才能保证任何时候FFmpeg需要读取数据时都能够返回数据，在数据不足时停止解码，进入Buffer状态，数据足够时继续解码播放，返回Play状态，保证FFmpeg不会报错退出播放。
 ### 4.3.4 音视频同步
 音频数据直接喂给Web Audio，通过Web Audio的Api可以获得当前播放的音频的时间戳，以该时间戳为时间基准来同步视频帧，如果当前视频帧的时间已经落后则立刻渲染，如果比较早，则需要delay。
 在H5里delay可以通过setTimeout实现(还未找到更好的方式)，上面做缓冲控制的另外一个意义在于控制视频的渲染频率，如果调用setTimeout的视频帧太多，内存会暴涨。
@@ -62,6 +62,7 @@ FFmpeg解码出来的音频数据是PCM格式，可以使用H5的Web Audio Api�
 - 通过Range字段下载一个chunk。
 
 如上面提到的，Player会进行速率控制，因此需要把文件分成chunk，按照chunk方式进行下载。下载的数据先发给Player，由Player转交给Decoder(理论上应该直接交给Decoder，但是Downloader无法直接与Decoder通信)。
+对流式的数据，则使用[Fetch](https://developer.mozilla.org/zh-CN/docs/Web/API/Fetch_API/Using_Fetch)。
 
 ## 4.5 Decoder
 这个模块需要加载原生代码生成的胶水代码(glue code)，胶水代码会加载wasm。
@@ -85,7 +86,7 @@ self.importScripts("libffmpeg.js");
 -s FORCE_FILESYSTEM=1 
 ```
 MEMFS会在内存中虚拟一个文件系统，Decoder收到Player发过来的文件数据直接写入缓存，由解码任务读取缓存。
-
+对流式的数据，则使用FFmpeg的环形缓存FIFO。
 ### 4.5.3 解码
 - 播放开始后不能立刻打开解码器，因为FFmpeg探测数据格式需要一定的数据长度(例如MP4头的长度)；
 - 缓存的数据足够后Player打开解码器，会得到音频的参数(通道数、采样率、采样大小、数据格式)，视频的参数(分辨率，duration、颜色空间)，以这些参数来初始化渲染器、界面；
@@ -158,5 +159,5 @@ Demo地址：[播放](https://roblin.cn/wasm/)。
 - Firefox；
 - Edge。
 # 8 主要问题
-- H265播放CPU占用相对来说较高，其中一部分消耗在大量数据的传递；
-- CPU比较高时有几率出现音视频不同步。
+- 解码、播放H265的CPU占用相对来说较高；
+- 如果不及时传递音频数据，AudioContext的currentTime不做控制可能会导致音视频不同步。
