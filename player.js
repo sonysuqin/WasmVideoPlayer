@@ -416,6 +416,9 @@ Player.prototype.stop = function () {
     if (this.timeTrack) {
         this.timeTrack.value = 0;
     }
+    if (this.timeLabel) {
+        this.timeLabel.innerHTML = this.formatTime(0) + "/" + this.displayDuration;
+    }
 
     this.logger.logInfo("Closing decoder.");
     this.decodeWorker.postMessage({
