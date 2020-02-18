@@ -849,7 +849,9 @@ Player.prototype.onRequestData = function (offset, available) {
 };
 
 Player.prototype.displayLoop = function() {
-    requestAnimationFrame(this.displayLoop.bind(this));
+    if (this.playerState !== playerStateIdle) {
+        requestAnimationFrame(this.displayLoop.bind(this));
+    }
     if (this.playerState != playerStatePlaying) {
         return;
     }
