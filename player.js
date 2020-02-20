@@ -506,7 +506,7 @@ Player.prototype.onGetFileInfo = function (info) {
 
     this.logger.logInfo("Got file size rsp:" + info.st + " size:" + info.sz + " byte.");
     if (info.st == 200) {
-        this.fileInfo.size = info.sz;
+        this.fileInfo.size = Number(info.sz);
         this.logger.logInfo("Initializing decoder.");
         var req = {
             t: kInitDecoderReq,
@@ -576,7 +576,7 @@ Player.prototype.onFileData = function (data, start, end, seq) {
 };
 
 Player.prototype.onFileDataUnderDecoderIdle = function () {
-    if (this.fileInfo.offset >= this.waitHeaderLength) {
+    if (this.fileInfo.offset >= this.waitHeaderLength || (!this.isStream && this.fileInfo.offset == this.fileInfo.size)) {
         this.logger.logInfo("Opening decoder.");
         this.decoderState = decoderStateInitializing;
         var req = {
@@ -839,7 +839,7 @@ Player.prototype.onRequestData = function (offset, available) {
         } else {
             if (offset >= 0 && offset < this.fileInfo.size) {
                 this.fileInfo.offset = offset;
-            } 
+            }
             this.startDownloadTimer();
         }
 
@@ -864,7 +864,7 @@ Player.prototype.displayLoop = function() {
         return;
     }
 
-    // requestAnimationFrame may be 60fps, if stream fps too large, 
+    // requestAnimationFrame may be 60fps, if stream fps too large,
     // we need to render more frames in one loop, otherwise display
     // fps won't catch up with source fps, leads to memory increasing,
     // set to 2 now.
